@@ -393,7 +393,7 @@ impl Dashboard {
 
     fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
         let text = format!(
-            " [n]ew session  [a]ssign  dra[i]n inbox  [s]top  [u]resume  [x]cleanup  [d]elete  [r]efresh  [Tab] switch pane  [j/k] scroll  [+/-] resize  [{}] layout  [?] help  [q]uit ",
+            " [n]ew session  [a]ssign  dra[i]n inbox  [g]lobal dispatch  [s]top  [u]resume  [x]cleanup  [d]elete  [r]efresh  [Tab] switch pane  [j/k] scroll  [+/-] resize  [{}] layout  [?] help  [q]uit ",
             self.layout_label()
         );
         let text = if let Some(note) = self.operator_note.as_ref() {
@@ -440,6 +440,7 @@ impl Dashboard {
             "  n       New session",
             "  a       Assign follow-up work from selected session",
             "  i       Drain unread task handoffs from selected session inbox",
+            "  g       Auto-dispatch unread handoffs across lead sessions",
             "  s       Stop selected session",
             "  u       Resume selected session",
             "  x       Cleanup selected worktree",
@@ -719,6 +720,52 @@ impl Dashboard {
                 "drained {} handoff(s) from {}",
                 outcomes.len(),
                 format_session_id(&source_session_id)
+            ));
+        }
+    }
+
+    pub async fn auto_dispatch_backlog(&mut self) {
+        let agent = self.cfg.default_agent.clone();
+        let lead_limit = self.sessions.len().max(1);
+
+        let outcomes = match manager::auto_dispatch_backlog(
+            &self.db,
+            &self.cfg,
+            &agent,
+            true,
+            lead_limit,
+        )
+        .await
+        {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                tracing::warn!("Failed to auto-dispatch backlog from dashboard: {error}");
+                self.set_operator_note(format!("global auto-dispatch failed: {error}"));
+                return;
+            }
+        };
+
+        let total_routed: usize = outcomes.iter().map(|outcome| outcome.routed.len()).sum();
+        let selected_session_id = self
+            .sessions
+            .get(self.selected_session)
+            .map(|session| session.id.clone());
+
+        self.refresh();
+        self.sync_selection_by_id(selected_session_id.as_deref());
+        self.sync_selected_output();
+        self.sync_selected_diff();
+        self.sync_selected_messages();
+        self.sync_selected_lineage();
+        self.refresh_logs();
+
+        if total_routed == 0 {
+            self.set_operator_note("no unread handoff backlog found".to_string());
+        } else {
+            self.set_operator_note(format!(
+                "auto-dispatched {} handoff(s) across {} lead session(s)",
+                total_routed,
+                outcomes.len()
             ));
         }
     }
@@ -1980,6 +2027,38 @@ mod tests {
         dashboard.delete_selected_session().await;
 
         assert!(db.get_session("done-1")?.is_none(), "session should be deleted");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auto_dispatch_backlog_sets_operator_note_when_clear() -> Result<()> {
+        let db_path = std::env::temp_dir().join(format!("ecc2-dashboard-{}.db", Uuid::new_v4()));
+        let db = StateStore::open(&db_path)?;
+        let now = Utc::now();
+
+        db.insert_session(&Session {
+            id: "lead-1".to_string(),
+            task: "coordinate".to_string(),
+            agent_type: "claude".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            state: SessionState::Running,
+            pid: None,
+            worktree: None,
+            created_at: now,
+            updated_at: now,
+            metrics: SessionMetrics::default(),
+        })?;
+
+        let dashboard_store = StateStore::open(&db_path)?;
+        let mut dashboard = Dashboard::new(dashboard_store, Config::default());
+        dashboard.auto_dispatch_backlog().await;
+
+        assert_eq!(
+            dashboard.operator_note.as_deref(),
+            Some("no unread handoff backlog found")
+        );
 
         let _ = std::fs::remove_file(db_path);
         Ok(())

@@ -41,6 +41,7 @@ pub async fn run(db: StateStore, cfg: Config) -> Result<()> {
                     (_, KeyCode::Char('n')) => dashboard.new_session().await,
                     (_, KeyCode::Char('a')) => dashboard.assign_selected().await,
                     (_, KeyCode::Char('i')) => dashboard.drain_inbox_selected().await,
+                    (_, KeyCode::Char('g')) => dashboard.auto_dispatch_backlog().await,
                     (_, KeyCode::Char('s')) => dashboard.stop_selected().await,
                     (_, KeyCode::Char('u')) => dashboard.resume_selected().await,
                     (_, KeyCode::Char('x')) => dashboard.cleanup_selected_worktree().await,
